@@ -2,102 +2,106 @@
 
 ---
 
-## v0.1.2 — Signal Quality
-
-(All planned features for this release have been implemented or moved to future releases)
-
----
-
 ## v0.1.3 — Transport Layer
 
 ### DNS-level block detection (~150 lines)
-Before HTTP probing, compare ISP DNS response (`resolve_host()` in `network.rs` — uses system DNS) with DoH response (`resolve_host_via_path_dns()` — already uses Cloudflare/Google DoH). Detect NXDOMAIN injection, blockpage IP substitution, and DNS poisoning. `NetworkEvidence.dns` and `NetworkEvidence.path_dns` are already populated — just need IP comparison logic in `compare_network_evidence()` to emit a verdict, not just a note.
+Before HTTP probing, compare ISP DNS response (`resolve_host()` in `network.rs` — uses system DNS) with DoH response (`resolve_host_via_path_dns()` — already uses Cloudflare/Google DoH). Detect NXDOMAIN injection, blockpage IP substitution, and DNS poisoning.
 
 ### SNI-based block detection (~120 lines)
-`probe_tls_443()` in `network.rs` already sends a TLS ClientHello with the target SNI. Extend: if TCP 443 succeeds but TLS handshake resets (already captured in `tls_443.status`) → emit `TlsFailure` with SNI-block reason. Also probe the same IP with a benign SNI (e.g. `cloudflare.com`) — if that succeeds → confirmed SNI block. Uses existing `tokio-rustls` setup.
-
-### DNS IP comparison in `compare_network_evidence` (~40 lines)
-`compare_network_evidence()` in `comparison.rs` generates text notes when local DNS fails and control path DNS succeeds (lines 92–100), but **never compares the actual IP sets**. If local DNS returns a blockpage IP while control returns the real IP, the difference is invisible. Add `parse_ip_from_detail()` on `ProbeEvidence.detail` and compare local vs control resolved IPs — if they differ, emit a `dns_ip_mismatch` note that boosts `CandidateProxyRequired` confidence.
-
-### TCP-80 probe result unused (~10 lines)
-`collect_network_evidence()` in `network.rs` probes `tcp/80` and stores it in `NetworkEvidence.tcp_80`, but `compare_network_evidence()` in `comparison.rs` never reads it. Either use it (local tcp/80 up but local tcp/443 down → likely port-level block) or remove the probe to avoid dead runtime cost.
+`probe_tls_443()` already sends SNI. Extend: if TCP succeeds but TLS resets → probe with benign SNI (e.g. `cloudflare.com`). If that succeeds → confirmed SNI block.
 
 ### IPv6 dual-stack probing (~60 lines)
-Extend `collect_network_evidence()` in `network.rs` to probe AAAA records alongside A records. Report when IPv4 is blocked but IPv6 works. `reqwest` and `tokio` support IPv6 natively. Add `ipv6` field to `NetworkEvidence`.
+Extend `collect_network_evidence()` to probe AAAA records. Report when IPv4 is blocked but IPv6 works (common in partial rollouts).
 
 ---
 
 ## v0.1.4 — Output & Export Formats
 
+### Direct `.srs` (sing-box Rule Set) Compilation (~200 lines)
+In 2026, `.srs` is heavily preferred over `.dat` for performance on low-end routers. Implement direct binary serialization to `.srs` to bypass the need for users to run `sing-box rule-set compile`.
+
 ### GeoIP — output: `geoip.dat` generation (~150 lines)
-DNS-resolve blocked domains → collect A/AAAA records → aggregate into CIDR subnets → compile into V2Ray `GeoIP` protobuf binary. Same `prost` setup already used in `geosite.rs`, no new dependencies. Flag: `--emit-geoip geoip.dat`.
+Aggregate blocked IPs into CIDR subnets and compile into V2Ray `GeoIP` binary. Useful for IP-based routing rules.
 
-### GeoIP — input: `geoip.dat` import (~100 lines)
-Mirror of `--import-geosite`: add `--import-geoip geoip.dat --import-geoip-category RU`. Decode CIDR blocks from the binary V2Ray `GeoIP` protobuf (same `prost` schema), then either reverse-rDNS each range or pass subnets directly as scan targets. Useful when the starting point is an IP blocklist rather than domain names.
-
-### GeoIP — blockpage IP fingerprinting (~50 lines)
-In `collect_network_evidence()`: if local DNS resolves to a known blockpage IP (built-in list or user file via `--blockpage-ips blockpage_ips.txt`), immediately emit a `dns_blockpage_ip` verdict with a confidence boost instead of a plain text note. Known examples: `95.213.255.1` (Rostelecom), `188.186.154.90` (MTS), `188.114.97.0/24` (Cloudflare WARP block range). Pairs with the DNS IP comparison item in v0.1.3.
-
-### Clash / Mihomo rule-set export (~50 lines)
-Add a `write_clash_rule_set()` to `router_exports.rs` using the existing `RouterExportSpec` pattern:
-```yaml
-payload:
-  - DOMAIN,blocked.com
-  - DOMAIN-SUFFIX,blocked.com
-```
-`RouterExportSpec` is already factored as a generic over domain lists — adding a new format is mechanical.
-
-### Shadowrocket / NekoBox config export (~40 lines)
-```ini
-[Rule]
-DOMAIN,blocked.com,PROXY
-DOMAIN-SUFFIX,blocked.com,PROXY
-```
-Same pattern as Clash export.
-
-### Import helpers (~80 lines)
-Parse existing block lists: Clash `.yaml`, Shadowrocket, NekoBox/Mihomo → extract domain list for scanning. Currently only `geosite.dat` binary and plain `.txt` are supported as input. `normalize_domain()` in `cli.rs` already handles most prefix formats.
-
-### JSON result export (~50 lines)
-`--format json` is parsed in `Args` but the JSON branch is likely a stub. `ScanResult` already derives `Serialize` — just needs a writer that emits `Vec<ScanResult>` as JSON to a file instead of only text reports.
+### Clash / Mihomo / Shadowrocket exports (~100 lines)
+Add mechanical exporters for YAML (Clash/Mihomo `.mrs`) and INI (Shadowrocket) formats using existing `RouterExportSpec`.
 
 ---
 
 ## v0.1.5 — State & Workflow
 
+### Adaptive Worker Concurrency (~100 lines)
+Automatically decrease worker count if the error rate (Unreachable/Timeout) spikes, and gradually increase it when stability returns. Prevents overwhelming the control proxy or triggering ISP rate limits.
+
+### Concurrent Domain Ingestion (~80 lines)
+Speed up startup by reading and normalizing multiple input files concurrently using `tokio::fs` and async tasks (rather than blocking the main thread). Essential for quickly loading massive datasets (100k+ domains).
+
 ### State expiry / TTL (~40 lines)
-`LocalState` in `state.rs` stores blocked/direct forever. Add a timestamp per domain (store as `domain\ttimestamp` in the text file). On load, expire entries older than N days (configurable via `--state-ttl-days`). Prevents stale direct-ok entries from masking newly-blocked domains after ISP policy changes.
-
-### Multi-file state merge (~30 lines)
-Currently `--state-dir` is a single directory. Add `--merge-state-dir` to ingest another state directory and union the sets before scanning. Useful when combining results from multiple machines or network vantage points.
-
-### Auto-rescan of `manual_review` bucket (~20 lines)
-`manual_review.txt` entries are always rescanned, but there is no mechanism to promote them after N failed rescans. Add a counter per domain — after 3 consecutive `ManualReview` results with no resolution, downgrade to `direct.txt` with a note, or flag as permanently inconclusive.
-
-### State: no `manual_review` counter / promotion logic (~30 lines)
-`LocalState` in `state.rs` stores `manual_review` as a plain `BTreeSet<String>` with no per-domain counter. The roadmap item "auto-rescan" already tracks this — but the data model must change first: replace plain string with `(domain, attempt_count)` tuple stored as `domain\t<n>` in the file. `read_domain_file()` / `write_domain_file()` need updating before the promotion logic can be wired in.
+Add timestamps to `LocalState`. Expire old entries to catch domains that were unblocked or moved to new infrastructure.
 
 ### Periodic state flush (~30 lines)
-With `--state-dir`, state is committed to disk only once at the very end of `main()`. If the user kills the process mid-scan or the proxy crashes, progress is lost. Add a periodic flush: every N domains processed (e.g. 1000), call `local_state.save(dir)`. The `save()` method already exists and is async.
+Save state every N processed domains to prevent progress loss during long scans or crashes.
 
 ---
 
-## v0.1.6 — Developer & Quality
+## v0.1.6 — Intelligence & Accuracy
 
-### `--dry-run` mode (~20 lines)
-Parse all inputs, validate proxy, check signatures, print a summary of what would be scanned — without making any network requests. Useful for CI validation of config files.
+### User-Loadable Service Profiles (~120 lines)
+Move `service_profiles.rs` logic to an external `profiles.toml`. Allows users to define custom API check paths and critical roles for niche services without recompiling.
 
-### Structured JSON logging with `--log-json` (~30 lines)
-Emit each scan result as a newline-delimited JSON (`ndjson`) stream to stderr while the scan runs. Enables piping into `jq`, log aggregators, or future UI tools.
+### Smart WAF/Captcha Promotion (~120 lines)
+Currently, WAF (403) and Captcha verdicts often fall into `ManualReview`. **Upgrade:** If Local sees WAF/Captcha but Control Proxy sees 200 OK → promote to `ConfirmedProxyRequired`.
+
+### Cross-Vantage Header Analysis (~80 lines)
+Compare WAF-specific headers (like `CF-RAY`, `X-Akamai-Reference`, `Server`) between local and proxy to reinforce the Geo-block hypothesis.
+
+### DPI Middlebox Locator (Application-Layer Traceroute) (~250 lines)
+Find *where* the block occurs by incrementally increasing the IP TTL on a blocked TLS ClientHello.
+
+### Next-Gen TLS Fingerprinting (JA4+ / `impersonate-rs`) (~150 lines)
+Cloudflare's 2026 WAF heavily relies on JA4+ and HTTP/2 frame ordering. Replace or augment `wreq` with `impersonate-rs` to perfectly mimic modern browsers (Chrome 146+, Safari 18+) to bypass aggressive ML bot-detection layers.
+
+### Automated Turnstile/reCAPTCHA Solver Integration (~200 lines)
+For domains enforcing strict "AI Labyrinth" JS challenges, replace generic headless Chrome with `Nodriver` or `Camoufox` integrations, potentially hooking into a lightweight local solver or CapSolver API to read the underlying page.
+
+### HTTP-Level IP Spoofing (~80 lines)
+Inject fake resident IP headers (`X-Forwarded-For`, `X-Real-IP`, `True-Client-IP`) into HTTP requests. Many poorly configured backend WAFs trust these headers to determine geographic origin, allowing the Control Proxy to bypass IP reputation limits.
+
+---
+
+## v0.1.7 — Performance & Quality
+
+### O(N log N) Domain Minimization (~100 lines)
+Replace the $O(N \times M)$ subdomain collapsing logic in `geosite::compile_categories`. Instead of a heavy Radix Trie, reverse domain strings (`com.example.www`), sort the array in $O(N \log N)$, and use a single linear pass to filter out redundant subdomains. This will make compiling large routing lists (100k+ domains) virtually instantaneous with zero allocations.
+
+### Detailed Proxy Statistics
+Track and report success/failure rates and average latency for each proxy in the rotation. Help identify "lazy" or dead proxies in the pool.
+
+### Moving Average for Progress Speed (~30 lines)
+Smooth out the domains/sec speed calculation in `progress.rs` by implementing a moving average over a 3-second history window, replacing the jumpy 2-second interval logic.
+
+### Enhanced Scan Reports (~50 lines)
+Add sections for "Confidence histogram" and "Non-technical per-service summary" in the human-readable text report output (`reports.rs`).
+
+### Structured JSON logging (`--log-json`)
+Emit newline-delimited JSON for piping into `jq` or external dashboards.
 
 ### Benchmark / regression test suite
-A curated set of domains with known expected outcomes (annotated as `geo domain.com`, `direct domain.com`, etc.) that runs via `cargo test` using mocked HTTP responses. `validation.rs` already has the `ExpectedOutcome` and bucket machinery — just needs a fixture-based test harness.
+Fixture-based harness using mocked HTTP responses to ensure detection logic doesn't regress.
 
-### Windows starter pack
-Release archive: `bulbascan.exe` + `profiles.toml` + `example-domains.txt` + `QUICKSTART.txt` (3 lines). Reduces friction for non-technical users from target audience.
+---
 
-### User-loadable signatures file (~80 lines)
-`signatures.rs` currently compiles all block signatures (body, header, API patterns) into the binary as Rust `const` arrays. Add support for loading an optional `signatures.toml` alongside the executable that extends or overrides the built-in set. The `BlockMatcher::new(file)` path already accepts an `Option<&Path>` — it just needs a TOML parser for the same schema.
+## v0.1.8 — Advanced Architecture & Tooling
 
-### Cancellable retry sleep (~10 lines)
-In `scan_domain()`, the `tokio::time::sleep()` between retest attempts (line ~768) is not cancellation-aware. If the user presses `q` during the backoff sleep, the worker does not react until the sleep expires. Wrap with `tokio::select! { () = sleep => {}, () = ct.cancelled() => break }`.
+### Global Configuration File (`bulbascan.toml`)
+Support reading default settings (proxy addresses, timeouts, concurrency limits, and export profiles) from a `bulbascan.toml` in the current directory or user config path to avoid passing long CLI flags every time.
+
+### HTTP/3 (QUIC) / XHTTP Probing
+DPI systems and CDNs behave differently on UDP. Extend transport probing to check HTTP/3 and newer protocols like Xray's `XHTTP` to test bypass viability without traditional TLS.
+
+### Daemon / REST API Mode
+Run Bulbascan as a long-running background service providing a local HTTP JSON API. Useful for integrating dynamic scans into network dashboards, router scripts, or custom web interfaces.
+
+### Automated Geosite / GeoIP Fetching
+Add a built-in command to fetch the latest lists directly into the cache to streamline the `--import-geosite` workflow.
+
