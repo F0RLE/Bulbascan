@@ -15,6 +15,14 @@
 
 Bulbascan scans a list of domains and determines whether each one is geo-blocked, WAF-protected, or freely accessible — then exports ready-to-use routing configs for Xray, sing-box, OpenWRT, and V2Ray `geosite.dat`.
 
+## How It Works
+
+Bulbascan uses a multi-layered approach to ensure zero false positives:
+1. **Fast HTTP Probing:** Uses `wreq` (browser-emulating) with a fallback to `reqwest`+`rustls`.
+2. **Dual-Vantage Comparison:** Compares the local ISP response against a trusted Control Proxy to definitively isolate geo-blocks from dead domains.
+3. **Headless Verification:** If a WAF or Captcha is suspected, it transparently spawns a local headless browser to dump the actual DOM and verify the block.
+4. **Signature Engine:** Analyzes headers, body, and API responses against a high-speed Aho-Corasick pattern matcher.
+
 | Verdict | Meaning |
 |---|---|
 | ✅ **Accessible** | Reachable directly |
@@ -34,6 +42,32 @@ bulbascan domains.txt --control-proxy socks5://127.0.0.1:1080 --export-profile f
 
 **Windows:** Drop `.txt` / `.dat` files onto `bulbascan.exe`. Results appear in `results_<filename>/`.
 
+## Advanced Usage
+
+**Export for routers (Xray/sing-box/OpenWRT) with state management:**
+```sh
+bulbascan domains.txt -x http://user:pass@proxy:port --export-profile router --state-dir ./state
+```
+
+**Import domains directly from an existing geosite file:**
+```sh
+bulbascan geosite.dat --import-geosite-category ru-blocked
+```
+
+## Use Cases
+- **Smart Routing (Selective Proxy):** Generate highly accurate `geosite.dat` or sing-box rules to route only blocked services through your proxy, leaving local traffic fast and direct.
+- **Home Routers:** Export directly to OpenWRT / dnsmasq formats for network-wide bypass.
+- **Censorship Analysis:** Discover exactly which layer (DNS, SNI, HTTP) your ISP or a specific service is blocking.
+
+## Supported Platforms
+- **Windows** (x86_64, ARM64)
+- **macOS** (Apple Silicon, Intel)
+- **Linux** (Debian/Ubuntu, Arch, Alpine, etc.)
+
+**Prerequisites:** 
+- For standard scanning: None (standalone binary).
+- For **Browser Verification** (WAF/Captcha bypass): A Chromium-based browser (Chrome, Edge, or Chromium) must be installed on the system.
+
 ## Key Features
 
 | Feature | Details |
@@ -47,6 +81,16 @@ bulbascan domains.txt --control-proxy socks5://127.0.0.1:1080 --export-profile f
 | Incremental state | Resume interrupted scans |
 | Multi-format export | `geosite.dat`, sing-box, Xray, OpenWRT PBR + dnsmasq |
 | Dynamic concurrency | `→`/`←` tier jump, `↑`/`↓` ±1 workers, `q` cancel |
+
+## Custom Service Profiles
+You can easily add custom API checks or service behaviors without recompiling by editing `profiles.toml`:
+
+```toml
+[services.openai]
+critical_role = "api"
+paths = ["/v1/models", "/api/auth/session"]
+browser_verify = true
+```
 
 ## Building
 
