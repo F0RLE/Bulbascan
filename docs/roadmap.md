@@ -11,8 +11,6 @@
     - Inject CDP (Chrome DevTools Protocol) initialization scripts (`Page.addScriptToEvaluateOnNewDocument`) to delete `navigator.webdriver` and mock `window.chrome` before the Cloudflare challenge executes.
     - Implement **Visibility-Only Interaction**: Ensure the scanner never follows "invisible" (honeypot) links used by Cloudflare's AI Labyrinth.
     - Integrate **CapSolver/2Captcha** API hooks for mandatory interactive Turnstile challenges.
-- **Smart WAF/Captcha Promotion:** 
-    - Automatically promote WAF (403) or Captcha results to `ConfirmedProxyRequired` if the local path is blocked but the Control Proxy sees `200 OK`.
 - **HTTP-Level IP Spoofing:**
     - Inject resident IP headers (`X-Forwarded-For`, `X-Real-IP`, `True-Client-IP`) with randomized residential CIDR ranges to bypass backend-level reputation filters.
 
