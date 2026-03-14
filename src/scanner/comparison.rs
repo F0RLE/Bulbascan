@@ -24,8 +24,12 @@ pub(crate) fn compare_result_pair(local: &ScanResult, control: &ScanResult) -> C
             | Verdict::TlsFailure
             | Verdict::Unreachable
             | Verdict::UnexpectedStatus
+            | Verdict::WafBlocked
+            | Verdict::Captcha
     ) && control.routing_decision == RoutingDecision::DirectOk
     {
+        // "Smart WAF/Captcha Promotion": If local is WAF/Captcha but control proxy is DirectOk,
+        // it means the site is selectively blocking the local IP/geo, not down globally.
         ComparisonDecision::CandidateProxyRequired
     } else if local.routing_decision == RoutingDecision::DirectOk
         && control.routing_decision == RoutingDecision::DirectOk
