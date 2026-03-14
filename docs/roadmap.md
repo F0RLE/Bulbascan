@@ -6,11 +6,6 @@
 
 > Focused on high-fidelity browser emulation, next-gen DPI evasion, and extreme performance.
 
-### 🛡️ Intelligence & Accuracy (WAF & Captcha Bypass)
-- ~~**Next-Gen TLS Fingerprinting (JA4+ / `rquest`):**~~
-    - ~~Transition from `wreq` to **`rquest`** (BoringSSL-based) for perfect JA4+ signatures.~~ *(Completed)*
-    - ~~Implement mandatory support for **X25519-MLKEM768** (Group ID `0x11EC`) to match Chrome 146+ defaults.~~ *(Completed)*
-    - ~~Synchronize HTTP/2 SETTINGS and WINDOW_UPDATE frame ordering with the impersonated browser profile.~~ *(Completed)*
 - **AI Labyrinth Evasion:**
     - Replace generic headless probing with **`Nodriver`** (CDP-based) to bypass `navigator.webdriver` detection.
     - Implement **Visibility-Only Interaction**: Ensure the scanner never follows "invisible" (honeypot) links used by Cloudflare's 2026 AI Labyrinth.
@@ -21,9 +16,9 @@
     - Inject resident IP headers (`X-Forwarded-For`, `X-Real-IP`, `True-Client-IP`) with randomized residential CIDR ranges to bypass backend-level reputation filters.
 
 ### 🚀 Performance & Scale
-- **O(N log N) Domain Minimization:** 
-    - Implement a zero-allocation minimizer: Reverse domains (`com.google.www`), sort, and filter redundant subdomains in a single linear pass. 
-    - Goal: Sub-second processing for lists > 100k domains.
+- ~~**O(N log N) Domain Minimization:**~~ 
+    - ~~Implement a zero-allocation minimizer: Reverse domains (`com.google.www`), sort, and filter redundant subdomains in a single linear pass.~~ *(Completed)*
+    - ~~Goal: Sub-second processing for lists > 100k domains.~~ *(Completed)*
 - **Concurrent Domain Ingestion:** 
     - Parallelize input file processing using `tokio::fs` and async tasks to eliminate startup latency when loading massive community lists.
 - **Moving Average Speed Smoothing:** 
